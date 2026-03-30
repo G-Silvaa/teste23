@@ -1,5 +1,6 @@
-import re
+import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -30,6 +31,10 @@ class AnalisadorLexico:
 
     OPERADORES_TRES = {
         ">>=", "<<="
+    }
+
+    DELIMITADORES_TRES = {
+        "..."
     }
 
     OPERADORES_DOIS = {
@@ -67,7 +72,7 @@ class AnalisadorLexico:
                 self._avancar_linha()
                 continue
 
-            if c == "#" and self.coluna == 1:
+            if c == "#" and self._esta_no_inicio_logico_da_linha():
                 self._ler_diretiva_preprocessador()
                 continue
 
@@ -141,6 +146,20 @@ class AnalisadorLexico:
             linha=linha if linha is not None else self.linha,
             coluna=coluna if coluna is not None else self.coluna
         ))
+
+    def _esta_no_inicio_logico_da_linha(self) -> bool:
+        indice = self.pos - 1
+        while indice >= 0 and self.codigo[indice] != "\n":
+            if self.codigo[indice] not in " \t\r":
+                return False
+            indice -= 1
+        return True
+
+    def _recuperar_literal_ate(self, delimitador: str):
+        while not self._fim() and self._atual() not in {delimitador, "\n"}:
+            self._avancar()
+        if not self._fim() and self._atual() == delimitador:
+            self._avancar()
 
     def _ler_diretiva_preprocessador(self):
         linha_ini, col_ini = self.linha, self.coluna
@@ -238,30 +257,37 @@ class AnalisadorLexico:
 
         if self._atual() == "\\":
             self._avancar()
-            if self._fim():
+            if self._fim() or self._atual() == "\n":
                 lexema = self.codigo[inicio:self.pos]
                 self._adicionar_token("ERROR", lexema, "Escape inválido em caractere", linha_ini, col_ini)
                 return
             escape = self._atual()
             if escape not in self.ESCAPES_VALIDOS:
                 self._avancar()
+                self._recuperar_literal_ate("'")
                 lexema = self.codigo[inicio:self.pos]
                 self._adicionar_token("ERROR", lexema, "Escape inválido em caractere", linha_ini, col_ini)
                 return
+            valor = "\\" + escape
             self._avancar()
         else:
+            valor = self._atual()
             self._avancar()
 
-        if self._fim() or self._atual() != "'":
-            while not self._fim() and self._atual() not in ["'", "\n"]:
-                self._avancar()
+        if self._fim() or self._atual() == "\n":
+            lexema = self.codigo[inicio:self.pos]
+            self._adicionar_token("ERROR", lexema, "Literal de caractere não terminado", linha_ini, col_ini)
+            return
+
+        if self._atual() != "'":
+            self._recuperar_literal_ate("'")
             lexema = self.codigo[inicio:self.pos]
             self._adicionar_token("ERROR", lexema, "Literal de caractere malformado", linha_ini, col_ini)
             return
 
         self._avancar()  # fecha aspas simples
         lexema = self.codigo[inicio:self.pos]
-        self._adicionar_token("CHAR_LITERAL", lexema, lexema[1:-1], linha_ini, col_ini)
+        self._adicionar_token("CHAR_LITERAL", lexema, valor, linha_ini, col_ini)
 
     def _ler_string(self):
         linha_ini, col_ini = self.linha, self.coluna
@@ -301,6 +327,11 @@ class AnalisadorLexico:
             self._avancar(3)
             return True
 
+        if trecho3 in self.DELIMITADORES_TRES:
+            self._adicionar_token("DELIMITER", trecho3, trecho3, linha_ini, col_ini)
+            self._avancar(3)
+            return True
+
         trecho2 = self.codigo[self.pos:self.pos + 2]
         if trecho2 in self.OPERADORES_DOIS:
             self._adicionar_token("OPERATOR", trecho2, trecho2, linha_ini, col_ini)
@@ -331,8 +362,31 @@ def imprimir_resultados(tokens: List[Token], tabela_simbolos: Dict[str, int]):
         print(f"{identificador}: {ocorrencias}")
 
 
-if __name__ == "__main__":
-    codigo_exemplo = r"""
+def obter_codigo_fonte() -> str:
+    parser = argparse.ArgumentParser(
+        description="Analisador léxico manual para uma linguagem semelhante a C."
+    )
+    parser.add_argument(
+        "arquivo",
+        nargs="?",
+        help="Caminho para o arquivo-fonte a ser analisado."
+    )
+    parser.add_argument(
+        "--codigo",
+        help="Código-fonte informado diretamente como texto."
+    )
+    args = parser.parse_args()
+
+    if args.arquivo and args.codigo:
+        parser.error("Use apenas uma fonte de entrada: arquivo ou --codigo.")
+
+    if args.arquivo:
+        return Path(args.arquivo).read_text(encoding="utf-8")
+
+    if args.codigo is not None:
+        return args.codigo
+
+    return r"""
 #include <stdio.h>
 
 int main(void) {
@@ -351,6 +405,13 @@ int main(void) {
 }
 """
 
-    analisador = AnalisadorLexico(codigo_exemplo)
+
+def main():
+    codigo_fonte = obter_codigo_fonte()
+    analisador = AnalisadorLexico(codigo_fonte)
     tokens, tabela = analisador.analisar()
     imprimir_resultados(tokens, tabela)
+
+
+if __name__ == "__main__":
+    main()
